@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: python-client
+  labels:
+    app: network-tester
+spec:
+  containers:
+  - name: python-client
+    # Una imagen ligera con 'curl' para hacer la prueba HTTP
+    image: curlimages/curl
+    # Comando simple para que el Pod se quede activo 1 hora
+    command: ["sleep", "3600"]
