@@ -10,13 +10,13 @@ Antes de interactuar con el clúster, es necesario preparar la estación de admi
 
 macOS (Homebrew)
 
-´´´sh
+```sh
 brew install siderolabs/tap/talosctl
 brew install kubectl
 
 # comprobar versión talos
 talosctl version --client
-´´´
+```
 
 Linux (Curl)
 
