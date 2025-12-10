@@ -1,249 +1,278 @@
-Guía de Despliegue: Talos Linux & Kubernetes (Enfoque Enterprise)
+# Kubernetes Lab con Talos Linux
 
-Esta guía documenta la arquitectura, el provisionamiento y la validación
-de un clúster de Kubernetes basado en Talos Linux.
-Incluye desde el entorno de laboratorio (Single Node) hasta una
-arquitectura de referencia de producción (High Availability), con
-estrategias GitOps y comandos operativos.
+Guía para montar un clúster Kubernetes de aprendizaje usando Talos Linux en un nodo local.
 
-------------------------------------------------------------------------
+## Prerequisitos
 
-🛠️ Instalación de Herramientas (CLI)
+-   Talos Linux instalado en un PC en red local
+-   Acceso a la red donde está el nodo
+-   Permisos de administración en tu máquina local
 
-Antes de interactuar con el clúster, hay que preparar la estación de
-administración (Management Plane).
+## 1. Instalación de herramientas CLI
 
-macOS (Homebrew)
+### macOS con Homebrew
 
-    brew install siderolabs/tap/talosctl
-    brew install kubectl
+```bash
+brew install siderolabs/tap/talosctl
+brew install kubectl
 
-    # Comprobar versión talos
-    talosctl version --client
+# Verificar instalación
+talosctl version --client
+```
 
-Linux (Curl)
+### Linux con curl
 
-    curl -sL https://talos.dev/install | sh
-    sudo mv talosctl /usr/local/bin/
+```bash
+curl -sL https://talos.dev/install | sh
+sudo mv talosctl /usr/local/bin/
+```
 
-------------------------------------------------------------------------
+## 2. Configuración inicial del clúster
 
-🏢 Arquitectura de Referencia: Entorno de Producción
+Al arrancar desde la ISO, Talos entra en **Maintenance Mode**. En este estado el sistema está esperando recibir configuración. No hay servicios activos ni contraseñas configuradas por defecto.
 
-En un entorno empresarial real, la arquitectura difiere radicalmente del
-laboratorio en disponibilidad y separación de responsabilidades.
+**Primer paso:** Anota la IP que ha recibido el nodo por DHCP, por ejemplo `192.168.1.40`.
 
-1. Topología Física (Bare-Metal)
+### Generar y aplicar configuración base
 
-Objetivo: eliminar puntos únicos de fallo (SPOF).
+```bash
+# Genera la configuración del clúster
+talosctl gen config mi-cluster https://192.168.1.40:6443
 
-    graph TD
-        subgraph "Control Plane (Quorum etcd)"
-            CP1[Nodo CP 1]
-            CP2[Nodo CP 2]
-            CP3[Nodo CP 3]
-        end
+# Integra la configuración en tu entorno local
+talosctl config merge talosconfig
 
-        subgraph "Data Plane (Workloads)"
-            W1[Worker 1 - Zona A]
-            W2[Worker 2 - Zona B]
-            W3[Worker 3 - Zona C]
-        end
+# Configura el endpoint y el nodo por defecto
+talosctl config endpoint 192.168.1.40
+talosctl config node 192.168.1.40
+```
 
-        LB[Virtual IP / Load Balancer] --> CP1
-        LB --> CP2
-        LB --> CP3
+### Inicializar el clúster
 
-        W1 -.-> LB
-        W2 -.-> LB
-        W3 -.-> LB
+```bash
+# Bootstrap: arranca etcd y Kubernetes
+talosctl bootstrap
+```
 
-Componentes:
+Este proceso puede tardar un par de minutos. Es normal que salgan errores de autorización al principio. El resultado correcto final mostrará:
 
--   Control Plane (3 nodos): quórum etcd garantizado.
--   VIP (Virtual IP): IP flotante por L2/BGP.
--   Workers (N nodos): dedicados a cargas de trabajo.
--   Red: Bonding (LACP) para evitar fallos de red.
+-   Stage: **Running**
+-   Ready: **true**
+-   Todos los componentes: **Healthy**
 
-------------------------------------------------------------------------
+### Configurar kubectl
 
-2. Estrategia GitOps (Multi-Repositorio)
+```bash
+# Genera el kubeconfig para operar el clúster
+talosctl kubeconfig > ~/.kube/config
+```
 
-Separación clara entre infraestructura, plataforma y aplicaciones.
+## 3. Configuración de red estática
 
-  ---------------------------------------------------------------------------------
-  Repositorio           Responsabilidad   Contenido
-  --------------------- ----------------- -----------------------------------------
-  infra-talos-fleet     Equipo            Configuración OS Talos, machineconfigs,
-                        Infraestructura   red física, upgrades del OS.
+Por defecto Talos usa DHCP. Para asignar una IP fija:
 
-  platform-core         Equipo            CNI, Ingress, Cert-Manager, Storage,
-                        Platform/SRE      Observabilidad.
+### Identificar la interfaz de red
 
-  app-backend-billing   Equipo Desarrollo Código Python/Go + Helm chart.
-                        A
+```bash
+talosctl -n 192.168.1.40 ls /sys/class/net
+```
 
-  app-frontend-store    Equipo Desarrollo Código React/NextJS + manifiestos K8s.
-                        B
-  ---------------------------------------------------------------------------------
+Esto te devolverá el nombre de la interfaz, por ejemplo `enp3s0`.
 
-------------------------------------------------------------------------
+### Modificar controlplane.yaml
 
-🧪 Guía de Implementación (Laboratorio / Single Node)
+Edita el archivo `controlplane.yaml` y añade esta configuración de red:
 
-1. Detección y Estado Inicial
+```yaml
+machine:
+    network:
+        interfaces:
+            - interface: enp3s0 # Usar el nombre que obtuviste antes
+              dhcp: false
+              addresses:
+                  - 192.168.1.40/24
+              routes:
+                  - network: 0.0.0.0/0
+                    gateway: 192.168.1.1
+```
 
-Al arrancar la ISO, Talos entra en Maintenance Mode esperando la
-configuración.
+### Aplicar la nueva configuración
 
--   Estado: Maintenance
--   Por qué: OS inmutable sin contraseñas ni servicios.
--   Acción: Anota la IP asignada por DHCP (ej. 192.168.1.41).
+```bash
+talosctl apply-config --file controlplane.yaml
+```
 
-------------------------------------------------------------------------
+## 4. Permitir workloads en el control plane
 
-2. Generación de Identidad del Clúster
+En un clúster de un solo nodo, el control plane tiene un taint que impide ejecutar workloads. Hay que eliminarlo:
 
-Genera certificados CA, claves y la configuración inicial.
+```bash
+kubectl taint nodes --all node-role.kubernetes.io/control-plane:NoSchedule-
+```
 
-    talosctl gen config mi-cluster https://192.168.1.41:6443
+## 5. Desplegar aplicaciones de prueba
 
-Salida:
+### Desplegar servidor echo
 
--   controlplane.yaml
--   worker.yaml
--   talosconfig
+```bash
+# Despliega un nginx que responde con código 200
+kubectl apply -f echo-server.yaml
+```
 
-------------------------------------------------------------------------
+### Probar conectividad
 
-3. Inyección de Configuración (Apply)
+```bash
+# Lanza un pod temporal con curl para verificar
+kubectl run curl-test --image=curlimages/curl -it --rm -- \
+  curl -v echo-server-svc
+```
 
-    talosctl apply-config --insecure --nodes 192.168.1.41 --file controlplane.yaml
+### Desplegar cliente Python
 
-El nodo se reinicia y aplica la configuración.
+```bash
+# Despliega un cliente que llama al echo-server cada 5 segundos
+kubectl apply -f python-client.yaml
 
-------------------------------------------------------------------------
+# Ver los logs en tiempo real
+kubectl logs -f deployment/python-client-deploy
+```
 
-4. Configuración del Cliente Local
+Tras instalar las librerías necesarias, el cliente empezará a hacer peticiones cada 5 segundos y verás las respuestas 200 del nginx.
 
-    talosctl config endpoint 192.168.1.41
-    talosctl config node 192.168.1.41
+---
 
-------------------------------------------------------------------------
+## Cheat sheet de comandos
 
-5. Bootstrap del Clúster
+### Talosctl - Gestión del clúster
 
-    talosctl bootstrap
+```bash
+# Estado general del clúster
+talosctl dashboard
 
-Monitorización:
+# Health check completo
+talosctl health
 
-    talosctl dashboard
+# Ver versión
+talosctl version
 
-------------------------------------------------------------------------
+# Listar nodos
+talosctl get members
 
-6. Obtención del Kubeconfig
+# Ver logs del sistema
+talosctl logs --tail
 
-    talosctl kubeconfig > ~/.kube/config
+# Ver configuración aplicada
+talosctl get machineconfig
 
-------------------------------------------------------------------------
+# Reiniciar nodo
+talosctl reboot
 
-7. Habilitar Cargas de Trabajo (Taint Removal)
+# Apagar nodo
+talosctl shutdown
 
-    kubectl taint node <nombre-del-nodo> node-role.kubernetes.io/control-plane:NoSchedule-
+# Ejecutar comando en nodo
+talosctl -n <IP> ls /path
 
-------------------------------------------------------------------------
+# Ver servicios del sistema
+talosctl services
 
-📦 Despliegue de Aplicaciones (Validación)
+# Ver estado de un servicio específico
+talosctl service <nombre>
+```
 
-echo-server.yaml
+### Kubectl - Gestión de Kubernetes
 
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: echo-server-deploy
-      labels:
-        app: echo-server
-    spec:
-      replicas: 1
-      selector:
-        matchLabels:
-          app: echo-server
-      template:
-        metadata:
-          labels:
-            app: echo-server
-        spec:
-          containers:
-          - name: echo-server
-            image: nginx:latest
-            ports:
-            - containerPort: 80
-    ---
-    apiVersion: v1
-    kind: Service
-    metadata:
-      name: echo-server-svc
-    spec:
-      selector:
-        app: echo-server
-      ports:
-      - port: 80
-        targetPort: 80
-      type: ClusterIP
+```bash
+# Estado del clúster
+kubectl cluster-info
+kubectl get nodes
+kubectl get all --all-namespaces
 
-Prueba de Conectividad
+# Trabajar con pods
+kubectl get pods
+kubectl get pods -o wide
+kubectl describe pod <nombre>
+kubectl logs <pod-name>
+kubectl logs -f <pod-name>  # Seguir logs en tiempo real
+kubectl exec -it <pod-name> -- /bin/sh
 
-    kubectl apply -f echo-server.yaml
+# Deployments
+kubectl get deployments
+kubectl describe deployment <nombre>
+kubectl scale deployment <nombre> --replicas=3
+kubectl rollout status deployment/<nombre>
+kubectl rollout restart deployment/<nombre>
 
-    kubectl run curl-test --image=curlimages/curl -it --rm -- \
-      curl -v echo-server-svc
+# Services
+kubectl get services
+kubectl describe service <nombre>
 
-------------------------------------------------------------------------
+# Namespaces
+kubectl get namespaces
+kubectl create namespace <nombre>
+kubectl config set-context --current --namespace=<nombre>
 
-⚡ Cheatsheet: Comandos Esenciales
+# Aplicar manifiestos
+kubectl apply -f <archivo.yaml>
+kubectl delete -f <archivo.yaml>
 
-🐧 Talos (talosctl)
+# Recursos
+kubectl top nodes
+kubectl top pods
 
-  ----------------------------------------------------------------------------------
-  Acción      Comando                          Descripción
-  ----------- -------------------------------- -------------------------------------
-  Dashboard   talosctl dashboard               Métricas y logs en tiempo real.
+# Debug
+kubectl get events
+kubectl get events --sort-by=.metadata.creationTimestamp
+kubectl describe node <nombre>
 
-  Listar      talosctl ps                      Procesos internos del nodo.
-  procesos
+# Port forwarding
+kubectl port-forward <pod-name> <local-port>:<pod-port>
 
-  Logs del    talosctl logs <service>          Ej.: kubelet, etcd.
-  sistema
+# Eliminar recursos
+kubectl delete pod <nombre>
+kubectl delete deployment <nombre>
+kubectl delete all --all  # Cuidado: borra todo en el namespace actual
+```
 
-  Reiniciar   talosctl reboot                  Reinicio ordenado.
-  nodo
+### Talosctl - Configuración
 
-  Upgrade OS  talosctl upgrade --image <url>   Actualización atómica.
+```bash
+# Cambiar contexto
+talosctl config context <nombre>
 
-  Reset       talosctl reset                   Revierte a Maintenance Mode (⚠️
-                                               destruye datos).
-  ----------------------------------------------------------------------------------
+# Ver configuración actual
+talosctl config info
 
-------------------------------------------------------------------------
+# Añadir endpoint
+talosctl config endpoint <IP>
 
-☸️ Kubernetes (kubectl)
+# Añadir nodo
+talosctl config node <IP>
 
-  ---------------------------------------------------------------------------------------
-  Acción      Comando                                  Descripción
-  ----------- ---------------------------------------- ----------------------------------
-  Estado      kubectl get nodes -o wide                IPs, versión, estado.
-  nodos
+# Generar kubeconfig
+talosctl kubeconfig
+talosctl kubeconfig -f
 
-  Todos los   kubectl get pods -A                      Sistema + usuario.
-  pods
+# Actualizar configuración de máquina
+talosctl apply-config --file <config.yaml>
+```
 
-  Logs app    kubectl logs -f -l app=<label>           Sigue logs por etiqueta.
+## Troubleshooting
 
-  Debug pod   kubectl describe pod <nombre>            Información detallada.
+### El bootstrap no termina o da errores
 
-  Shell       kubectl exec -it <pod> -- sh             Acceso al contenedor.
-  remota
+-   Espera 2-3 minutos, es normal que tarde
+-   Verifica que la IP sea accesible: `ping 192.168.1.40`
+-   Comprueba el estado: `talosctl health`
 
-  Reiniciar   kubectl rollout restart deployment/...   Recrea pods sin borrar el
-  app                                                  deployment.
-  ---------------------------------------------------------------------------------------
+### No puedo hacer kubectl
+
+-   Verifica que el kubeconfig se haya generado: `cat ~/.kube/config`
+-   Comprueba conectividad: `kubectl cluster-info`
+-   Regenera el kubeconfig: `talosctl kubeconfig -f`
+
+### Los pods quedan en Pending
+
+-   Verifica el taint del control plane (paso 4)
+-   Comprueba recursos: `kubectl describe node`
+-   Revisa eventos: `kubectl get events`
