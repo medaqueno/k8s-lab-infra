@@ -4,9 +4,9 @@ Guía para montar un clúster Kubernetes de aprendizaje usando Talos Linux en un
 
 ## Prerequisitos
 
--   Talos Linux instalado en un PC en red local
--   Acceso a la red donde está el nodo
--   Permisos de administración en tu máquina local
+- Talos Linux instalado en un PC en red local
+- Acceso a la red donde está el nodo
+- Permisos de administración en tu máquina local
 
 ## 1. Instalación de herramientas CLI
 
@@ -29,250 +29,150 @@ sudo mv talosctl /usr/local/bin/
 
 ## 2. Configuración inicial del clúster
 
-Al arrancar desde la ISO, Talos entra en **Maintenance Mode**. En este estado el sistema está esperando recibir configuración. No hay servicios activos ni contraseñas configuradas por defecto.
+1. Instalación de ArgoCD (vía GitOps)
 
-**Primer paso:** Anota la IP que ha recibido el nodo por DHCP, por ejemplo `192.168.1.40`.
+Para seguir tu estructura, instalaremos ArgoCD en el namespace infra-tools y nos aseguraremos de que sus pods se ejecuten únicamente en los nodos etiquetados para infraestructura.
 
-### Generar y aplicar configuración base
-
-```bash
-# Genera la configuración del clúster
-talosctl gen config mi-cluster https://192.168.1.40:6443
-
-# Integra la configuración en tu entorno local
-talosctl config merge talosconfig
-
-# Configura el endpoint y el nodo por defecto
-talosctl config endpoint 192.168.1.40
-talosctl config node 192.168.1.40
-```
-
-### Inicializar el clúster
+Comandos iniciales (Bootstrap):
 
 ```bash
-# Bootstrap: arranca etcd y Kubernetes
-talosctl bootstrap
+
+# 1. Crear el namespace dedicado
+
+kubectl create namespace infra-tools
+
+# 2. Instalación estándar de ArgoCD
+
+kubectl apply -n infra-tools -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 ```
 
-Este proceso puede tardar un par de minutos. Es normal que salgan errores de autorización al principio. El resultado correcto final mostrará:
-
--   Stage: **Running**
--   Ready: **true**
--   Todos los componentes: **Healthy**
-
-### Configurar kubectl
-
-```bash
-# Genera el kubeconfig para operar el clúster
-talosctl kubeconfig > ~/.kube/config
-```
-
-## 3. Configuración de red estática
-
-Por defecto Talos usa DHCP. Para asignar una IP fija:
-
-### Identificar la interfaz de red
-
-```bash
-talosctl -n 192.168.1.40 ls /sys/class/net
-```
-
-Esto te devolverá el nombre de la interfaz, por ejemplo `enp3s0`.
-
-### Modificar controlplane.yaml
-
-Edita el archivo `controlplane.yaml` y añade esta configuración de red:
+Parche de Kustomize para el Tier infra-tools: Para que ArgoCD respete tu jerarquía de nodos, crea en tu repo k8s-gitops/system/argocd/kustomization.yaml:
 
 ```yaml
-machine:
-    network:
-        interfaces:
-            - interface: enp3s0 # Usar el nombre que obtuviste antes
-              dhcp: false
-              addresses:
-                  - 192.168.1.40/24
-              routes:
-                  - network: 0.0.0.0/0
-                    gateway: 192.168.1.1
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Forzamos a que todos los componentes de Argo vayan al hierro de gestión
+patches:
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          node-role.kubernetes.io/tier: "infra-tools"
 ```
-
-### Aplicar la nueva configuración
-
-```bash
-talosctl apply-config --file controlplane.yaml
-```
-
-## 4. Permitir workloads en el control plane
-
-En un clúster de un solo nodo, el control plane tiene un taint que impide ejecutar workloads. Hay que eliminarlo:
-
-```bash
-kubectl taint nodes --all node-role.kubernetes.io/control-plane:NoSchedule-
-```
-
-## 5. Desplegar aplicaciones de prueba
-
-### Desplegar servidor echo
-
-```bash
-# Despliega un nginx que responde con código 200
-kubectl apply -f echo-server.yaml
-```
-
-### Probar conectividad
-
-```bash
-# Lanza un pod temporal con curl para verificar
-kubectl run curl-test --image=curlimages/curl -it --rm -- \
-  curl -v echo-server-svc
-```
-
-### Desplegar cliente Python
-
-```bash
-# Despliega un cliente que llama al echo-server cada 5 segundos
-kubectl apply -f python-client.yaml
-
-# Ver los logs en tiempo real
-kubectl logs -f deployment/python-client-deploy
-```
-
-Tras instalar las librerías necesarias, el cliente empezará a hacer peticiones cada 5 segundos y verás las respuestas 200 del nginx.
 
 ---
 
-## Cheat sheet de comandos
+2. Istio Ambient
 
-### Talosctl - Gestión del clúster
+Aquí es donde resolvemos el hacer pública tu API de forma profesional. Istio Ambient no usa sidecars (es más ligero) y utiliza un componente llamado Ztunnel y Gateway.
+A. Instalación de Istio Ambient
 
-```bash
-# Estado general del clúster
-talosctl dashboard
-
-# Health check completo
-talosctl health
-
-# Ver versión
-talosctl version
-
-# Listar nodos
-talosctl get members
-
-# Ver logs del sistema
-talosctl logs --tail
-
-# Ver configuración aplicada
-talosctl get machineconfig
-
-# Reiniciar nodo
-talosctl reboot
-
-# Apagar nodo
-talosctl shutdown
-
-# Ejecutar comando en nodo
-talosctl -n <IP> ls /path
-
-# Ver servicios del sistema
-talosctl services
-
-# Ver estado de un servicio específico
-talosctl service <nombre>
-```
-
-### Kubectl - Gestión de Kubernetes
+Usaremos istioctl (instálalo en tu máquina local primero). El perfil ambient es el que necesitas:
 
 ```bash
-# Estado del clúster
-kubectl cluster-info
-kubectl get nodes
-kubectl get all --all-namespaces
-
-# Trabajar con pods
-kubectl get pods
-kubectl get pods -o wide
-kubectl describe pod <nombre>
-kubectl logs <pod-name>
-kubectl logs -f <pod-name>  # Seguir logs en tiempo real
-kubectl exec -it <pod-name> -- /bin/sh
-
-# Deployments
-kubectl get deployments
-kubectl describe deployment <nombre>
-kubectl scale deployment <nombre> --replicas=3
-kubectl rollout status deployment/<nombre>
-kubectl rollout restart deployment/<nombre>
-
-# Services
-kubectl get services
-kubectl describe service <nombre>
-
-# Namespaces
-kubectl get namespaces
-kubectl create namespace <nombre>
-kubectl config set-context --current --namespace=<nombre>
-
-# Aplicar manifiestos
-kubectl apply -f <archivo.yaml>
-kubectl delete -f <archivo.yaml>
-
-# Recursos
-kubectl top nodes
-kubectl top pods
-
-# Debug
-kubectl get events
-kubectl get events --sort-by=.metadata.creationTimestamp
-kubectl describe node <nombre>
-
-# Port forwarding
-kubectl port-forward <pod-name> <local-port>:<pod-port>
-
-# Eliminar recursos
-kubectl delete pod <nombre>
-kubectl delete deployment <nombre>
-kubectl delete all --all  # Cuidado: borra todo en el namespace actual
+istioctl install --set profile=ambient --set values.global.hub=docker.io/istio --namespace infra-tools -y
 ```
 
-### Talosctl - Configuración
+B. El Gateway (Tu nueva IP pública)
 
-```bash
-# Cambiar contexto
-talosctl config context <nombre>
+En lugar de NodePort, crearemos un Gateway. Este objeto de Istio levantará un balanceador (o escuchará en los puertos 80/443 del nodo) y redirigirá el tráfico.
 
-# Ver configuración actual
-talosctl config info
+k8s-gitops/system/istio/gateway.yaml
 
-# Añadir endpoint
-talosctl config endpoint <IP>
-
-# Añadir nodo
-talosctl config node <IP>
-
-# Generar kubeconfig
-talosctl kubeconfig
-talosctl kubeconfig -f
-
-# Actualizar configuración de máquina
-talosctl apply-config --file <config.yaml>
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main-gateway
+  namespace: infra-tools
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All # Permite que apps de otros namespaces se conecten
 ```
 
-## Troubleshooting
+C. Conectando la API: HTTPRoute
 
-### El bootstrap no termina o da errores
+Ahora le decimos a Istio: "Si alguien viene por el puerto 80, envíalo al servicio de mi API".
 
--   Espera 2-3 minutos, es normal que tarde
--   Verifica que la IP sea accesible: `ping 192.168.1.40`
--   Comprueba el estado: `talosctl health`
+k8s-gitops/apps/python-api-1/overlays/prod/httproute.yaml
 
-### No puedo hacer kubectl
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: python-api-route
+  namespace: python-api-1-prod
+spec:
+  parentRefs:
+    - name: main-gateway
+      namespace: infra-tools
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: python-api-1-svc
+          port: 80
+```
 
--   Verifica que el kubeconfig se haya generado: `cat ~/.kube/config`
--   Comprueba conectividad: `kubectl cluster-info`
--   Regenera el kubeconfig: `talosctl kubeconfig -f`
+3. ¿Cómo queda el flujo ahora?
 
-### Los pods quedan en Pending
+   Tráfico: Llega a la IP de tu nodo físico (tier normal o infra-tools según configures el Gateway).
 
--   Verifica el taint del control plane (paso 4)
--   Comprueba recursos: `kubectl describe node`
--   Revisa eventos: `kubectl get events`
+   Istio Gateway: Recibe la petición en el puerto 80.
+
+   HTTPRoute: Mira la regla y dice: "Esto va para el servicio python-api-1-svc".
+
+   Ztunnel (Ambient): Transporta el tráfico de forma segura dentro del clúster hasta el pod de la aplicación.
+
+---
+
+Para que ArgoCD pueda desplegar la aplicación, necesitamos que los manifiestos en el repositorio de GitOps sean definitivos y sigan el estándar de Istio Ambient (sin NodePorts).
+
+Aquí tienes el contenido de los archivos que faltan para python-api-1, estructurados para que el desarrollador no tenga que tocarlos y tú los gestiones vía GitOps.
+
+1. Los Manifiestos de la Aplicación (Repo GitOps)
+
+Ubicación: k8s-gitops/apps/python-api-1/
+A. Base: base/deployment.yaml
+
+Este es el esqueleto. Fíjate en el nodeSelector que comentamos para forzar el tier normal.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-api-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: python-api-1
+  template:
+    metadata:
+      labels:
+        app: python-api-1
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/tier: "normal"
+      containers:
+        - name: app
+          image: app-image # Kustomize reemplazará esto automáticamente
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: python-api-1-config
+```
