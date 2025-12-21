@@ -33,7 +33,7 @@ resource "talos_machine_configuration_worker" "worker" {
       machine = {
         nodeLabels = {
           "topology.kubernetes.io/zone" = "rack-1"
-          "node-role.kubernetes.io/tier" = "normal" # O internal/infra-tools
+          "node-role.kubernetes.io/tier" = "applications"
         }
       }
     })

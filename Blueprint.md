@@ -84,10 +84,44 @@ Paso 3: Despliegue del Plano de Control (ArgoCD + Istio)
 Instalamos las herramientas en el Tier infra-tools:
 Bash
 
-# 1. ArgoCD con parche de nodo
+# 1. Guía de Acceso y Configuración Inicial de ArgoCD
 
 kubectl create namespace infra-tools
 kubectl apply -k k8s-lab-gitops/system/argocd/
+
+La contraseña del usuario por defecto (admin) se genera automáticamente durante la instalación y se almacena en un Secreto de Kubernetes.
+
+Utiliza el siguiente comando para obtener y decodificar la contraseña:
+
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+
+Nota: Una vez que inicies sesión por primera vez, se recomienda cambiar esta contraseña a una de tu elección por motivos de seguridad.
+
+2. Acceso a la Interfaz Web (UI)
+
+Para acceder al dashboard de ArgoCD desde tu máquina local, debes crear un túnel seguro (Port-Forwarding) hacia el servicio del servidor de ArgoCD.
+
+### Asume que ArgoCD está en el namespace 'argocd'.
+
+### Si lo instalaste en 'infra-tools', usa ese namespace.
+
+kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+
+Advertencia: El & ejecuta el comando en segundo plano. Si el namespace es diferente a argocd (por ejemplo, infra-tools), debes ajustar el comando.
+
+3. Iniciar Sesión
+
+Abre tu navegador web y navega a la dirección: https://localhost:8080.
+
+Acepta la advertencia de seguridad del certificado (es un certificado autofirmado).
+
+Ingresa las credenciales:
+
+Username: admin
+
+Password: La contraseña obtenida en el Paso 1.
+
+Una vez dentro, podrás ver el estado de sincronización (Synced / OutOfSync) y la salud (Healthy / Degraded) de todas las aplicaciones gestionadas por GitOps.
 
 # 2. Istio Ambient
 
