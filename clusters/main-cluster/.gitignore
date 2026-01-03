@@ -1,0 +1,8 @@
+# Professional OpenTofu/Terraform ignore
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# Talos generated artifacts (Sensitive)
+_generated/
