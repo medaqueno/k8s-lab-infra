@@ -144,10 +144,10 @@ kubectl apply -f https://raw.githubusercontent.com/medaqueno/k8s-lab-gitops/main
 ```
 *Note: Ensure you have pushed your changes to `k8s-lab-gitops` before running this.*
 
-### 6.3 Verify Platform
-ArgoCD will automatically:
-1.  Create `istio-system`, `dev-demo-app` namespaces with correct labels.
-2.  Install Istio Gateway and Ztunnel.
+### 6.4 Verify Platform
+ArgoCD will automatically create the base infrastructure:
+1.  **Create Namespaces**: `istio-system` (Platform Mesh).
+2.  **Install Mesh components**: Istio Gateway, Ztunnel and CNI.
 
 Check the progress:
 ```bash
@@ -155,7 +155,7 @@ kubectl get applications -n argocd
 kubectl get pods -n istio-system
 ```
 
-### 6.4 Access ArgoCD UI
+### 6.5 Access ArgoCD UI
 1. **Retrieve the admin password**:
    ```bash
    kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
@@ -173,9 +173,6 @@ kubectl get pods -n istio-system
 ### 7.1 Namespace & Multi-Tenancy
 Ensure namespaces were created with the correct labels for the architecture:
 ```bash
-# Check for Ambient Mesh label on workload namespaces
-kubectl get namespaces -L istio.io/dataplane-mode
-
 # Check for Tier labels
 kubectl get namespaces -L tier
 ```
@@ -203,14 +200,13 @@ argocd app list
 
 ---
 
-## 10. Final Verification Checklist
+## 8. Final Verification Checklist
 
 - [ ] **OS Layer**: `talosctl health` returns all healthy.
 - [ ] **K8s Layer**: Node `192.168.1.35` is in `Ready` state.
 - [ ] **Scheduling**: Node is "untainted" (Section 5.3).
 - [ ] **Mesh Layer**: `ztunnel` pod is running in `istio-system`.
 - [ ] **GitOps Layer**: `argocd-server` is reachable and `bootstrap` app is Synced.
-- [ ] **Namespace Policy**: `dev-demo-app` has `istio.io/dataplane-mode=ambient` label.
 
 ---
 
