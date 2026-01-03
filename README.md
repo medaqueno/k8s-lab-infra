@@ -195,8 +195,26 @@ kubectl logs -n istio-system -l app=ztunnel | grep "adding pod"
 Check the "App of Apps" status:
 ```bash
 # Ensure all apps are Synced and Healthy
+# Note: "platform" might stay in Progressing if no LoadBalancer IP is available.
 argocd app list
 ```
+
+---
+
+## 8. Known Issues & Tips for Local Labs
+
+### LoadBalancer IP Pending
+Your Gateway Service will show `<pending>` because there is no Cloud Load Balancer. 
+* **Impact**: ArgoCD will show the app as `Progressing` indefinitely.
+* **Workaround**: You can still access the services via NodePort if you find the mapped ports:
+  ```bash
+  kubectl get svc -n istio-system main-gateway-istio
+  ```
+* **Recommended fix**: Install **MetalLB** later to manage a local pool of IPs.
+
+### Pod Security for Istio Ambient
+Ztunnel requires `privileged` host permissions. If you see `FailedCreate` errors in `istio-system`, verify that the namespace is labeled:
+`pod-security.kubernetes.io/enforce=privileged`.
 
 ---
 
