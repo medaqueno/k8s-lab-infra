@@ -1,113 +1,51 @@
-# Architecture Overview: K8s Lab Design
+# Architecture Overview: Single-Node K8s Lab Design
 
-This document describes the design philosophy, technical flows, and component objectives for the Kubernetes Lab using a C4-inspired modeling approach.
+This document describes the design for a resource-efficient Kubernetes Lab running on a **single physical node** using Talos Linux and Istio Ambient Mesh.
 
-## 1. System Context (C4 Level 1)
-The Lab System provides a platform for deploying and managing containerized applications using GitOps.
+## 1. System Context
+The system provides a platform for GitOps-driven application deployment on a single consolidated node.
 
 ```mermaid
 graph LR
-    User([Developer / User]) -- "Access Apps / API" --> Lab[("Kubernetes Lab (Talos)")]
-    Lab -- "Sync Config" --> Git[("GitOps Repos (GitHub)")]
-    Admin([Security/Platform]) -- "Manage Platform" --> Lab
+    User([Developer]) -- "Access Apps" --> Node[("Single Node (Talos)")]
+    Node -- "Sync Config" --> Git[("GitOps Repo")]
 ```
 
-## 2. Platform Containers & Traffic Flow (C4 Level 2)
+## 2. Namespace Strategy (Logical Isolation)
+Because we have a single physical node, isolation is enforced through a strict namespace strategy and Istio Ambient Mesh policies.
 
-This diagram visualizes how an external request enters the cluster and interacts with the internal tiers using **Istio Ambient Mesh** (Sidecarless).
+| Category | Patterns | Purpose | Mesh Status |
+| :--- | :--- | :--- | :--- |
+| **System** | `kube-*`, `talos-*` | Core Kubernetes/OS components. | Excluded |
+| **Platform** | `istio-system`, `argocd` | Shared platform tools (ArgoCD, Gateways). | Selective |
+| **Workloads** | `<env>-<app-name>` | Business/User applications. | **Ambient Enabled** |
 
-```mermaid
-graph TD
-    subgraph "External"
-        Internet[User Request]
-    end
+### Policy Enforcement
+*   **Labeling**: Workload namespaces MUST be labeled with `istio.io/dataplane-mode=ambient` to join the sidecarless mesh.
+*   **Resource Management**: Logical limits are used to ensure platform tools (ArgoCD) always have enough memory to operate in the shared 4GB environment.
+*   **Logical Tiers**: Even on one node, we preserve the "Tier" concept in labels (e.g., `app.kubernetes.io/part-of=platform`) to maintain GitOps compatibility with cloud-scale designs.
 
-    subgraph "Platform Tier (Management)"
-        subgraph "Ingress Layer"
-            IstioIngress[Istio Ingress Gateway]
-        end
-        
-        subgraph "Security & Mesh Control"
-            IstioD[Istiod]
-            CertMan[Cert Manager]
-        end
-    end
+## 3. Traffic Flow (Ambient Mesh)
+We use **Istio Ambient Mesh** to minimize memory consumption by removing sidecars.
 
-    subgraph "Worker Node (Ambient Mesh enabled)"
-        ZTunnel[ZTunnel - Node Agent L4]
-        
-        subgraph "Application Namespace"
-            PyApp[Python API Pod]
-            WayPoint[Waypoint Proxy L7 - Optional]
-        end
-    end
+1.  **Ingress**: Traffic enters via the **Istio Ingress Gateway**.
+2.  **L4 Security**: The **ztunnel** (running as a daemonset) handles mTLS encryption.
+3.  **App Delivery**: Traffic goes directly to the application pod without sidecar overhead.
 
-    Internet --> IstioIngress
-    IstioIngress -- "HBONE / mTLS" --> ZTunnel
-    ZTunnel -- "L4 Policy" --> PyApp
-    ZTunnel -- "Encapsulation" --> WayPoint
-    WayPoint -- "L7 Policy" --> PyApp
-```
+## 4. Resource Allocation (4GB RAM)
+To survive on 4GB of RAM:
+*   **Talos OS**: Minimal footprint.
+*   **No Sidecars**: Ambient mesh saves ~50MB per pod.
+*   **Consolidated CP**: Allowing scheduling on the control plane removes the need for extra VMs.
 
-### Request Traffic Flow (Ambient Mesh Lifecycle)
-1.  **Entry**: Traffic hits the **Istio Ingress Gateway**.
-2.  **L4 Security (ztunnel)**: The Gateway sends traffic via **HBONE** (HTTP-Based Overlay Network) to the destination node's **ztunnel**. This provides node-to-node mTLS without sidecars.
-3.  **L7 Processing (Waypoint)**: If complex L7 policies (retries, headers) are needed, traffic is routed through a **Waypoint Proxy** (a dedicated pod for the namespace).
-4.  **Delivery**: The request is delivered to the **Python API** pod. No sidecar container is running inside the application pod.
+## 5. Component Objectives
 
-## 3. GitOps Lifecycle (The "Deployment" Flow)
+| Component | Responsibility |
+| :--- | :--- |
+| **Talos OS** | Immutable OS and single-node K8s management. |
+| **ArgoCD** | GitOps reconciliation for all tiers. |
+| **Istio Ambient** | Sidecarless mTLS and routing. |
+| **Namespaces** | Logical isolation of workloads. |
 
-We follow a **Push-to-Git, Pull-to-Cluster** strategy.
-
-```mermaid
-sequenceDiagram
-    participant Dev as Developer
-    participant Git as Git Repository
-    participant Argo as ArgoCD (Controller)
-    participant K8s as Cluster Resources
-
-    Dev->>Git: git push (kustomize changes)
-    loop Reconciliation Loop
-        Argo->>Git: Poll/Webhook (detect change)
-        Argo->>Argo: Diff existing vs desired state
-        Argo->>K8s: Apply (kubectl apply)
-    end
-    K8s-->>Argo: Healthy Status
-```
-
-## 4. Namespace Strategy
-
-| Category | Pattern | Purpose |
-| :--- | :--- | :--- |
-| **System** | `kube-*`, `talos-*` | Core Kubernetes/OS components. |
-| **Platform** | `istio-system`, `argocd` | Shared platform tools. |
-| **Environment** | `<env>-<app-name>` | Business apps. **Labeled for Ambient Mesh** (`istio.io/dataplane-mode=ambient`). |
-
-## 5. Component Objectives & Finality
-
-| Component | Responsibility | Failure Impact |
-| :--- | :--- | :--- |
-| **Talos OS** | Immutable Node Security. | Total Failure. |
-| **ArgoCD** | GitOps Reconciliation. | Management drift. |
-| **Istio Ambient** | **Sidecarless** L4/L7 Service Mesh. | Loss of mesh connectivity / ZT security. |
-| **ZTunnel** | Node-level mTLS (L4). | Loss of L4 connectivity on the node. |
-| **Cert-Manager** | Identity & TLS certificates. | Expired identities; mTLS handshake failures. |
-
-## 6. Connectivity Strategy: Professional Exposure
-
-Moving away from the "NodePort approach" common in basic labs, this architecture uses the **Gateway API** standard via Istio.
-
-| Feature | Basic Lab (NodePort) | This Lab (Istio Gateway) |
-| :--- | :--- | :--- |
-| **Port Management** | Manual (30000-32767) | Standard ports (80/443) |
-| **Security** | Direct exposure to nodes | Protected by Ztunnel (mTLS) |
-| **Layer 7** | No routing logic | Header-based routing, retries, etc. |
-| **TLS** | Manual / None | Automatic with Cert-Manager |
-
-## 7. Node Isolation Rationale (Tiering)
-
-To maximize the 4GB server capacity, we use a physical-to-logical separation:
-
-*   **Platform Workers**: Dedicated to "heavy" clusters-wide services (ArgoCD, Monitoring, Istio). These are tainted to ensure business workloads do not steal resources from the management plane.
-*   **Application Workers**: Optimized for user workloads. By keeping these separate, we can update or scale applications without risking the stability of the ArgoCD sync loop or the Istio Control Plane.
-*   **Node Selection Enforcement**: All platform deployments (e.g., ArgoCD) are patched via GitOps to include a `nodeSelector` for the `platform` tier, ensuring strict adherence to this isolation strategy.
+## 6. Connectivity
+Services are exposed via the **Gateway API** standard. The single node's IP (`192.168.1.35`) serves as the entry point for all HTTP/HTTPS traffic on ports 80/443.

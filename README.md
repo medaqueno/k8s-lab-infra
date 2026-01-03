@@ -1,118 +1,219 @@
-# Step-by-Step Installation Guide: Kubernetes Lab "From Scratch"
+# Step-by-Step Installation Guide: Kubernetes Lab "From Scratch" (Single Node)
 
-This guide covers setting up the management workstation and bootstrapping the cluster from zero using Talos Linux and OpenTofu.
+This guide covers bootstrapping a single-node Kubernetes cluster using Talos Linux and OpenTofu on a physical machine with 4GB RAM.
+
+> [!TIP]
+> Antes de empezar, revisa la **[Arquitectura del Sistema](architecture_overview.md)** y las **[Convenciones de Nombres](NAMING_CONVENTIONS.md)** que rigen este cluster.
 
 ## 1. Prerequisites (Management Machine)
 
-You need a workstation (Mac or Linux) to manage the cluster. This machine is outside the cluster but has connectivity to the nodes.
+You need a workstation (Mac or Linux) to manage the cluster.
 
 ### 1.1 Install Tools
 
 #### MacOS
-Using Homebrew:
 ```bash
-# Core Tools
-brew install opentofu kubectl talosctl istioctl argocd
-
-# Verify
-tofu version
-talosctl version --client
+brew install opentofu kubectl talosctl istioctl argocd helm
 ```
 
-#### Fedora (Linux)
+---
+
+## 2. Design Rationale: Local Lab vs. Cloud/Production
+
+### 2.1 Why a Single Node for this Lab?
+This lab is optimized for **resource-constrained physical hardware** (4GB RAM).
+- **Memory Efficiency**: Running 3 Virtual Machines (VMs) on 4GB of RAM would lead to extreme swapping and instability. A single-node OS installation leaves ~3.5GB for Kubernetes and applications.
+- **Sidecarless Architecture**: We use **Istio Ambient Mesh**. This saves ~50MB of RAM per pod compared to traditional sidecar meshes, which is vital in a small-memory environment.
+- **Simplicity**: For internal learning, a single node reduces networking complexity while still allowing you to learn the Kubernetes API, GitOps, and Mesh logic.
+
+### 2.2 Recommendations for Cloud/Production
+In a Production or Cloud environment (AWS, GCP, Azure), you should **never** use a single-node setup. Recommended patterns include:
+
+| Feature | Local Lab (This setup) | Cloud / Production |
+| :--- | :--- | :--- |
+| **High Availability** | Single Node (Single Point of Failure) | 3 Control Plane nodes + Auto-scaling Workers. |
+| **Isolation** | Logical (Namespaces) | Physical (Dedicated Node Groups for System/Apps). |
+| **Ingress** | Local Istio Gateway on the same node | Cloud Load Balancer (ALB/NLB) with multiple IPs. |
+| **Storage** | Local Disk (Ephemeral) | Persistent CSI Drivers (EBS, Persistent Disks, EFS). |
+| **Managed Services** | Manual Talos management | Use EKS, GKE, or AKS to offload Control Plane management. |
+
+---
+
+## 3. Cluster Architecture (Single Node Logic)
+
+Separation is achieved through **Namespaces** instead of physical nodes.
+
+- **System**: `kube-system`, `talos-system` (Core OS & K8s)
+- **Platform**: `argocd`, `istio-system` (Management tools)
+- **Applications**: `dev-demo-app`, `prod-demo-app` (Your workloads)
+
+---
+
+## 4. Bootstrapping the Node
+
+### 4.1 Generate Configuration
+Navigate to the cluster directory:
 ```bash
-# OpenTofu
-sudo dnf install -y dnf-plugins-core
-sudo dnf config-manager --add-repo https://packages.opentofu.org/opentofu/tofu/rpm/opentofu.repo
-sudo dnf install -y tofu
-
-# Kubectl
-sudo dnf install -y kubernetes-client
-
-# Istioctl, Talosctl, ArgoCD (Generic Binaries)
-curl -sL https://talos.dev/install | sh
-# Note: Manually move binaries to /usr/local/bin or your PATH
+cd clusters/main-cluster
+tofu init
+tofu apply
 ```
 
-#### Debian/Ubuntu (Linux)
+This generates `_generated/controlplane.yaml` (the single node config) and `_generated/talosconfig`.
+
+### 4.2 Apply Configuration
+Set the talosconfig environment variable and apply the config to your machine (`192.168.1.35`):
+
 ```bash
-# OpenTofu
-curl -fsSL https://get.opentofu.org/opentofu.gpg | sudo tee /etc/apt/keyrings/opentofu.gpg
-echo "deb [signed-by=/etc/apt/keyrings/opentofu.gpg] https://packages.opentofu.org/opentofu/opentofu/any/ any main" | sudo tee /etc/apt/sources.list.d/opentofu.list
-sudo apt-get update && sudo apt-get install -y tofu
-
-# Kubectl & others similar to Fedora/Generic scripts
-```
-
-## 2. Cluster Architecture & Design
-
-Before deploying, review the **[Architecture Overview](architecture_overview.md)** to understand the tiering (Platform vs Applications) and the Istio Ambient Mesh traffic flow.
-
-## 3. Bootstrapping the Infrastructure
-
-We use **OpenTofu** for all provider and machine configuration.
-
-1.  Navigate to the cluster directory:
-    ```bash
-    cd clusters/main-cluster
-    ```
-2.  Initialize and Plan:
-    ```bash
-    tofu init
-    tofu plan
-    ```
-3.  **Generate Blueprints**:
-    ```bash
-    tofu apply
-    ```
-
-### 3.1 Provisioning the Nodes (OS Level)
-Now that OpenTofu has generated your YAML blueprints, you must apply them to the physical nodes.
-
-#### A. Apply Configuration to the first node
-Sends the generated YAML to the node (replace with your node IP).
-```bash
+export TALOSCONFIG=$(pwd)/_generated/talosconfig
 talosctl apply-config --insecure --nodes 192.168.1.35 --file _generated/controlplane.yaml
 ```
 
-#### B. Initialize the Cluster (Etcd)
+### 4.3 Initialize Cluster
+Run the bootstrap command once on the node:
 ```bash
-# Set your talosconfig (generated by OpenTofu)
-export TALOSCONFIG=$(pwd)/_generated/talosconfig
-
-# Initialize the first node
 talosctl bootstrap --nodes 192.168.1.35
 ```
 
-If you prefer to avoid the environment variable, you can run:
+### 4.4 Retrieve Kubeconfig
 ```bash
-talosctl bootstrap --nodes 192.168.1.35 --talosconfig _generated/talosconfig
+talosctl kubeconfig _generated/ --nodes 192.168.1.35
+export KUBECONFIG=$(pwd)/_generated/kubeconfig
 ```
 
-#### C. Retrieve Kubeconfig
+---
+
+## 5. Verification: OS & Base Cluster
+
+Before installing the platform, ensure the foundation is solid.
+
+### 5.1 Real-time Node Monitoring
+Open a new terminal and keep this dashboard running:
 ```bash
-talosctl kubeconfig _generated/ --nodes 192.168.1.35 --talosconfig _generated/talosconfig
+talosctl dashboard --nodes 192.168.1.35
 ```
 
-#### D. Verify Cluster Health
+### 5.2 Kubernetes Health Check
 ```bash
-talosctl health --nodes 192.168.1.35 --talosconfig _generated/talosconfig
+# Check node status
+kubectl get nodes -o wide
+
+# Check core system pods
+kubectl get pods -n kube-system
+
+# Check for any errors in the cluster
+kubectl get events --sort-by='.lastTimestamp' -A
 ```
 
-## 4. Post-Install: Platform Setup (ArgoCD & Istio)
+---
 
-Once the cluster is up, follow the GitOps bootstrap process:
+## 6. Namespace Strategy Setup
 
-1.  **ArgoCD Bootstrapping**:
-    Instalar ArgoCD en el namespace `platform-tools` y parchear los Deployments para que se ejecuten en el tier `platform`.
-    ```bash
-    kubectl create namespace platform-tools
-    kubectl apply -n platform-tools -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-    ```
+Create the logical separation:
+```bash
+# Platform Management (ArgoCD)
+kubectl create namespace argocd
+kubectl label namespace argocd tier=platform
 
-2.  **Istio Ambient Installation**:
-    ```bash
-    istioctl install --set profile=ambient --namespace platform-tools -y
-    ```
+# Sample Application
+kubectl create namespace dev-demo-app
+kubectl label namespace dev-demo-app app.kubernetes.io/part-of=applications
+kubectl label namespace dev-demo-app istio.io/dataplane-mode=ambient
+```
 
-For detailed platform configuration (Gateways, HTTPRoutes), refer to the manifests in the **k8s-lab-gitops** repository.
+---
+
+## 7. Install Istio Ambient (Sidecarless Mesh)
+
+### 7.1 Installation
+Install Istio with the ambient profile to save memory:
+```bash
+istioctl install --set profile=ambient \
+  --set components.ingressGateways[0].enabled=true \
+  --set components.ingressGateways[0].name=istio-ingressgateway \
+  --namespace istio-system \
+  --create-namespace \
+  -y
+```
+
+### 7.2 Verification: Mesh Infrastructure
+```bash
+# Verify Istiod and Ztunnel (Node Agent)
+kubectl get pods -n istio-system
+
+# Check Ztunnel logs for connectivity
+kubectl logs -n istio-system -l app=ztunnel --tail 20
+```
+
+---
+
+## 8. Install ArgoCD (GitOps Controller)
+
+### 8.1 Installation
+Install ArgoCD in its standard namespace:
+```bash
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+```
+
+### 8.2 Verification: ArgoCD
+```bash
+# Check pods
+kubectl get pods -n argocd
+
+# Retrieve the admin password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+
+# Access UI (Local Port Forward)
+# kubectl port-forward svc/argocd-server -n argocd 8080:443
+```
+
+---
+
+## 9. Configure Istio Gateway
+
+Expose the cluster services:
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main-gateway
+  namespace: istio-system
+spec:
+  gatewayClassName: istio
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+EOF
+```
+
+### 9.1 Verification: Ingress Gateway
+```bash
+# Check if the Gateway resource exists
+kubectl get gateway -n istio-system
+
+# Check the address assigned to the Gateway
+kubectl get service -n istio-system istio-ingressgateway
+```
+
+---
+
+## 10. Final Verification Checklist
+
+- [x] **OS Layer**: `talosctl health` returns all healthy.
+- [x] **K8s Layer**: Node `192.168.1.35` is in `Ready` state.
+- [x] **Scheduling**: `kubectl describe node` shows no "NoSchedule" taints.
+- [x] **Mesh Layer**: `ztunnel` pod is running in `istio-system`.
+- [x] **GitOps Layer**: `argocd-server` is reachable.
+- [x] **Namespace Policy**: `dev-demo-app` has `istio.io/dataplane-mode=ambient` label.
+
+---
+
+## Next Steps
+1. Create your application manifests in the **k8s-lab-gitops** repo.
+2. Link the repo to ArgoCD.
+3. Deploy!
