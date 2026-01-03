@@ -56,6 +56,7 @@ Navigate to the cluster directory:
 ```bash
 cd clusters/main-cluster
 tofu init
+tofu plan
 tofu apply
 ```
 
@@ -105,111 +106,111 @@ kubectl get pods -n kube-system
 kubectl get events --sort-by='.lastTimestamp' -A
 ```
 
+### 5.3 Allow Scheduling on Single Node (Required)
+By default, the control plane node has a taint that prevents scheduling normal workloads. Since this is a single-node lab, we must remove it:
+```bash
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+```
+
 ---
 
-## 6. Namespace Strategy Setup
+---
 
-Create the logical separation:
+## 6. GitOps Bootstrap
+Instead of manually creating namespaces and installing components, we will let ArgoCD manage the platform.
+
+### 6.1 Install ArgoCD
 ```bash
-# Platform Management (ArgoCD)
+# Create namespace
 kubectl create namespace argocd
+
+# Label it for the architecture
 kubectl label namespace argocd tier=platform
 
-# Sample Application
-kubectl create namespace dev-demo-app
-kubectl label namespace dev-demo-app app.kubernetes.io/part-of=applications
-kubectl label namespace dev-demo-app istio.io/dataplane-mode=ambient
-```
-
----
-
-## 7. Install Istio Ambient (Sidecarless Mesh)
-
-### 7.1 Installation
-Install Istio with the ambient profile to save memory:
-```bash
-istioctl install --set profile=ambient \
-  --set components.ingressGateways[0].enabled=true \
-  --set components.ingressGateways[0].name=istio-ingressgateway \
-  --namespace istio-system \
-  --create-namespace \
-  -y
-```
-
-### 7.2 Verification: Mesh Infrastructure
-```bash
-# Verify Istiod and Ztunnel (Node Agent)
-kubectl get pods -n istio-system
-
-# Check Ztunnel logs for connectivity
-kubectl logs -n istio-system -l app=ztunnel --tail 20
-```
-
----
-
-## 8. Install ArgoCD (GitOps Controller)
-
-### 8.1 Installation
-Install ArgoCD in its standard namespace:
-```bash
+# Install ArgoCD
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 ```
 
-### 8.2 Verification: ArgoCD
+### 6.2 Install Gateway API CRDs (Required for Istio Ambient)
+These CRDs must be present before ArgoCD tries to sync the Istio Gateway:
 ```bash
-# Check pods
-kubectl get pods -n argocd
-
-# Retrieve the admin password
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
-
-# Access UI (Local Port Forward)
-# kubectl port-forward svc/argocd-server -n argocd 8080:443
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml
 ```
+
+### 6.3 Apply Bootstrap App
+Apply the "App of Apps" which will spin up the Platform (Istio, Namespaces) and Workloads.
+```bash
+kubectl apply -f https://raw.githubusercontent.com/medaqueno/k8s-lab-gitops/main/bootstrap/bootstrap.yaml
+```
+*Note: Ensure you have pushed your changes to `k8s-lab-gitops` before running this.*
+
+### 6.3 Verify Platform
+ArgoCD will automatically:
+1.  Create `istio-system`, `dev-demo-app` namespaces with correct labels.
+2.  Install Istio Gateway and Ztunnel.
+
+Check the progress:
+```bash
+kubectl get applications -n argocd
+kubectl get pods -n istio-system
+```
+
+### 6.4 Access ArgoCD UI
+1. **Retrieve the admin password**:
+   ```bash
+   kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
+   ```
+2. **Port-forward to the server**:
+   ```bash
+   kubectl port-forward svc/argocd-server -n argocd 8080:443
+   ```
+3. Open `https://localhost:8080` and login with user `admin`.
 
 ---
 
-## 9. Configure Istio Gateway
+## 7. Operational Verification
 
-Expose the cluster services:
+### 7.1 Namespace & Multi-Tenancy
+Ensure namespaces were created with the correct labels for the architecture:
 ```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: main-gateway
-  namespace: istio-system
-spec:
-  gatewayClassName: istio
-  listeners:
-  - name: http
-    port: 80
-    protocol: HTTP
-    allowedRoutes:
-      namespaces:
-        from: All
-EOF
+# Check for Ambient Mesh label on workload namespaces
+kubectl get namespaces -L istio.io/dataplane-mode
+
+# Check for Tier labels
+kubectl get namespaces -L tier
 ```
 
-### 9.1 Verification: Ingress Gateway
+### 7.2 Istio Ambient Mesh Status
+Verify that the sidecarless mesh is active:
 ```bash
-# Check if the Gateway resource exists
-kubectl get gateway -n istio-system
+# Verify Ztunnel (one pod per node)
+kubectl get pods -n istio-system -l app=ztunnel
 
-# Check the address assigned to the Gateway
-kubectl get service -n istio-system istio-ingressgateway
+# Verify Istio Ingress Gateway
+kubectl get pods -n istio-system -l app=istio-ingressgateway
+
+# Check if pods in dev-demo-app are captured by the mesh
+# (The output should show ztunnel log entries for the pod IP)
+kubectl logs -n istio-system -l app=ztunnel | grep "adding pod"
+```
+
+### 7.3 GitOps Reconciliation
+Check the "App of Apps" status:
+```bash
+# Ensure all apps are Synced and Healthy
+argocd app list
 ```
 
 ---
 
 ## 10. Final Verification Checklist
 
-- [x] **OS Layer**: `talosctl health` returns all healthy.
-- [x] **K8s Layer**: Node `192.168.1.35` is in `Ready` state.
-- [x] **Scheduling**: `kubectl describe node` shows no "NoSchedule" taints.
-- [x] **Mesh Layer**: `ztunnel` pod is running in `istio-system`.
-- [x] **GitOps Layer**: `argocd-server` is reachable.
-- [x] **Namespace Policy**: `dev-demo-app` has `istio.io/dataplane-mode=ambient` label.
+- [ ] **OS Layer**: `talosctl health` returns all healthy.
+- [ ] **K8s Layer**: Node `192.168.1.35` is in `Ready` state.
+- [ ] **Scheduling**: Node is "untainted" (Section 5.3).
+- [ ] **Mesh Layer**: `ztunnel` pod is running in `istio-system`.
+- [ ] **GitOps Layer**: `argocd-server` is reachable and `bootstrap` app is Synced.
+- [ ] **Namespace Policy**: `dev-demo-app` has `istio.io/dataplane-mode=ambient` label.
 
 ---
 
