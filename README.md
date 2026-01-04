@@ -204,20 +204,6 @@ kubectl get pods -n istio-system
    - **ztunnel**: The secure proxy (handling mTLS) for Ambient mesh.
    - **main-gateway-istio**: Your ingress gateway (the name may vary slightly depending on your specific Helm release name, but it usually contains "gateway").
 
-
-
-
-### 6.5 Access ArgoCD UI
-1. **Retrieve the admin password**:
-   ```bash
-   kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
-   ```
-2. **Port-forward to the server**:
-   ```bash
-   kubectl port-forward svc/argocd-server -n argocd 8080:443
-   ```
-3. Open `https://localhost:8080` and login with user `admin`.
-
 ---
 
 ## 7. Operational Verification
@@ -259,3 +245,17 @@ Your Gateway Service will show `<pending>` because there is no Cloud Load Balanc
 ### Pod Security for Istio Ambient
 Ztunnel requires `privileged` host permissions. If you see `FailedCreate` errors in `istio-system`, verify that the namespace is labeled:
 `pod-security.kubernetes.io/enforce=privileged`.
+
+## 9. Next Steps: GitOps Operations
+
+From this point forward, all application and configuration management is done through Git and ArgoCD.
+
+**For GitOps operations (deployments, configurations, rollbacks)**, refer to the complete documentation at:
+📘 **[k8s-lab-gitops Repository](https://github.com/medaqueno/k8s-lab-gitops)**
+
+There you will find:
+- How to add new applications
+- ConfigMaps and Secrets management
+- Multi-environment deployments (dev/prod)
+- Rollbacks and troubleshooting
+- ArgoCD UI access
