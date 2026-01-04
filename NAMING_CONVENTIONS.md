@@ -20,8 +20,8 @@ In this lab, **Tiers** are logical metadata categories, not part of the physical
 | `istio-system` | `platform` | Mesh infrastructure. |
 | `argocd` | `platform` | GitOps delivery tools. |
 | `platform-tools` | `platform` | Generic management utilities. |
-| `dev-python-api-1` | `applications` | Development user workload. |
-| `prod-python-api-1` | `applications` | Production user workload. |
+| `dev-demo-app` | `applications` | Development user workload. |
+| `prod-demo-app` | `applications` | Production user workload. |
 
 ---
 
@@ -31,7 +31,7 @@ In this lab, **Tiers** are logical metadata categories, not part of the physical
 **Pattern**: `<environment>-<app-name>` (for apps) or `<app-name>` (for platform).
 
 **Examples**:
-- `dev-python-api-1`
+- `dev-demo-app`
 - `istio-system`
 - `argocd`
 
@@ -39,7 +39,7 @@ In this lab, **Tiers** are logical metadata categories, not part of the physical
 **Pattern**: `<app-name>-<resource-type>`
 
 **Examples**:
-- `python-api-1-deploy`
+- `demo-app-deploy`
 - `redis-service`
 - `postgres-config`
 
@@ -52,7 +52,7 @@ Every resource must carry standard labels to allow logical filtering.
 ### 4.1 System Labels
 | Key | Example Value |
 | :--- | :--- |
-| `app.kubernetes.io/name` | `python-api-1` |
+| `app.kubernetes.io/name` | `demo-app` |
 | `app.kubernetes.io/part-of` | `k8s-lab` |
 | `app.kubernetes.io/managed-by` | `argocd` |
 
