@@ -76,6 +76,11 @@ Run the bootstrap command once on the node:
 talosctl bootstrap --nodes 192.168.1.35
 ```
 
+Process might take some minutes until all nodes become accesible. You can check the progress of the bootstrap process with:
+```bash
+talosctl health --nodes 192.168.1.35 --talosconfig _generated/talosconfig
+```
+
 ### 4.4 Retrieve Kubeconfig
 ```bash
 talosctl kubeconfig _generated/ --nodes 192.168.1.35
@@ -107,14 +112,18 @@ kubectl get events --sort-by='.lastTimestamp' -A
 ```
 
 ### 5.3 Allow Scheduling on Single Node (Required)
-By default, the control plane node has a taint that prevents scheduling normal workloads. Since this is a single-node lab, we must remove it:
+By default, the control plane node has a taint that prevents scheduling normal workloads since this is a single-node lab. It is already removed by our configuration in `main.tofu` but we can ensure that no taint exists:
+```bash
+kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+```
+
+If there would be any taint, we must remove it:
 ```bash
 kubectl taint nodes --all node-role.kubernetes.io/control-plane-
 ```
 
 ---
 
----
 
 ## 6. GitOps Bootstrap
 Instead of manually creating namespaces and installing components, we will let ArgoCD manage the platform.
@@ -149,11 +158,54 @@ ArgoCD will automatically create the base infrastructure:
 1.  **Create Namespaces**: `istio-system` (Platform Mesh).
 2.  **Install Mesh components**: Istio Gateway, Ztunnel and CNI.
 
-Check the progress:
+It will take a few minutes until all pods are running.
+
+## Check the Progress
+
+### ArgoCD Applications
+Run the following command to check the status of your applications in ArgoCD:
+
 ```bash
 kubectl get applications -n argocd
+```
+
+   You should see at least **two applications**:
+   - The **bootstrap** app (the parent).
+   - The **platform** app (created by the bootstrap app).
+
+   Example output:
+
+   | NAME       | SYNC STATUS | HEALTH STATUS |
+   |------------|-------------|---------------|
+   | bootstrap  | Synced      | Healthy       |
+   | platform   | Synced      | Progressing   |
+
+   > **Note:**
+   > The `platform` app often remains in a `Progressing` state (instead of `Healthy`) because the Istio Gateway is waiting for a LoadBalancer IP that doesn’t exist in a local lab environment. This is normal and can be ignored.
+
+---
+
+### Istio Ambient Pods
+Run the following command to check the pods in the `istio-system` namespace:
+
+```bash
 kubectl get pods -n istio-system
 ```
+
+   You should see the **4 core components of Istio Ambient**. Since you are on a single node, you will see **1 of each**:
+
+   | NAME                          | READY | STATUS  | RESTARTS | AGE |
+   |-------------------------------|-------|---------|----------|-----|
+   | istiod-xxxxx                  | 1/1   | Running | 0        | 2m  |
+   | main-gateway-istio-xxxxx      | 1/1   | Running | 0        | 2m  |
+   | ztunnel-xxxxx                 | 1/1   | Running | 0        | 2m  |
+
+   - **istiod**: The control plane of Istio.
+   - **ztunnel**: The secure proxy (handling mTLS) for Ambient mesh.
+   - **main-gateway-istio**: Your ingress gateway (the name may vary slightly depending on your specific Helm release name, but it usually contains "gateway").
+
+
+
 
 ### 6.5 Access ArgoCD UI
 1. **Retrieve the admin password**:
@@ -191,14 +243,6 @@ kubectl get pods -n istio-system -l app=istio-ingressgateway
 kubectl logs -n istio-system -l app=ztunnel | grep "adding pod"
 ```
 
-### 7.3 GitOps Reconciliation
-Check the "App of Apps" status:
-```bash
-# Ensure all apps are Synced and Healthy
-# Note: "platform" might stay in Progressing if no LoadBalancer IP is available.
-argocd app list
-```
-
 ---
 
 ## 8. Known Issues & Tips for Local Labs
@@ -215,20 +259,3 @@ Your Gateway Service will show `<pending>` because there is no Cloud Load Balanc
 ### Pod Security for Istio Ambient
 Ztunnel requires `privileged` host permissions. If you see `FailedCreate` errors in `istio-system`, verify that the namespace is labeled:
 `pod-security.kubernetes.io/enforce=privileged`.
-
----
-
-## 8. Final Verification Checklist
-
-- [ ] **OS Layer**: `talosctl health` returns all healthy.
-- [ ] **K8s Layer**: Node `192.168.1.35` is in `Ready` state.
-- [ ] **Scheduling**: Node is "untainted" (Section 5.3).
-- [ ] **Mesh Layer**: `ztunnel` pod is running in `istio-system`.
-- [ ] **GitOps Layer**: `argocd-server` is reachable and `bootstrap` app is Synced.
-
----
-
-## Next Steps
-1. Create your application manifests in the **k8s-lab-gitops** repo.
-2. Link the repo to ArgoCD.
-3. Deploy!
