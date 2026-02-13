@@ -1,6 +1,6 @@
 # Step-by-Step Installation Guide: Kubernetes Lab "From Scratch" (Single Node)
 
-This guide covers bootstrapping a single-node Kubernetes cluster using Talos Linux and OpenTofu on a physical machine with 4GB RAM.
+This guide covers bootstrapping a single-node Kubernetes cluster using Talos Linux and OpenTofu on a physical machine with 16GB RAM.
 
 > [!TIP]
 > Antes de empezar, revisa la **[Arquitectura del Sistema](architecture_overview.md)** y las **[Convenciones de Nombres](NAMING_CONVENTIONS.md)** que rigen este cluster.
@@ -21,8 +21,8 @@ brew install opentofu kubectl talosctl istioctl argocd helm
 ## 2. Design Rationale: Local Lab vs. Cloud/Production
 
 ### 2.1 Why a Single Node for this Lab?
-This lab is optimized for **resource-constrained physical hardware** (4GB RAM).
-- **Memory Efficiency**: Running 3 Virtual Machines (VMs) on 4GB of RAM would lead to extreme swapping and instability. A single-node OS installation leaves ~3.5GB for Kubernetes and applications.
+This lab is optimized for a **single physical machine** (16GB RAM).
+- **Memory Efficiency**: A single-node OS installation with explicit resource reservations (2GB system + 512MB kubelet) leaves ~13GB for Kubernetes workloads.
 - **Sidecarless Architecture**: We use **Istio Ambient Mesh**. This saves ~50MB of RAM per pod compared to traditional sidecar meshes, which is vital in a small-memory environment.
 - **Simplicity**: For internal learning, a single node reduces networking complexity while still allowing you to learn the Kubernetes API, GitOps, and Mesh logic.
 
@@ -69,9 +69,6 @@ From the cluster directory, run:
 ```bash
 cd clusters/main-cluster
 tofu init
-
-tofu plan
-
 tofu apply
 ```
 
@@ -101,10 +98,6 @@ Verify connectivity:
 kubectl get nodes -o wide
 ```
 
-Process might take some minutes until all nodes become accesible. You can check the progress of the bootstrap process with:
-```bash
-talosctl health --nodes 192.168.1.35 --talosconfig _generated/talosconfig
-```
 ---
 
 ## 5. Verification: OS & Base Cluster
@@ -130,7 +123,7 @@ kubectl get events --sort-by='.lastTimestamp' -A
 ```
 
 ### 5.3 Allow Scheduling on Single Node (Required)
-By default, the control plane node has a taint that prevents scheduling normal workloads since this is a single-node lab. It is already removed by our configuration in `main.tofu` but we can ensure that no taint exists:
+By default, the control plane node has a taint that prevents scheduling normal workloads. In this single-node lab the taint is already removed by the configuration applied through `tofu apply`, but you can verify that no taint exists:
 ```bash
 kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
 ```
@@ -139,20 +132,6 @@ If there would be any taint, we must remove it:
 ```bash
 kubectl taint nodes --all node-role.kubernetes.io/control-plane-
 ```
-
-### 5.4 Definir los nodos y endpoints por defecto 
-Para evitar tener que poner --talosconfig  --nodes y --endpoint todo el tiempo:
-
-```bash
-talosctl config node 192.168.1.35 --talosconfig ./_generated/talosconfig
-talosctl config endpoint 192.168.1.35 --talosconfig ./_generated/talosconfig
-```
-
-Hacer que talosctl use ese archivo automáticamente: Para no tener que poner --talosconfig ./talosconfig todo el tiempo, lo ideal es moverlo a la ubicación por defecto de la herramienta o usar una variable de entorno:
-
-- Opción A: Copia el archivo a ~/.talos/config.
-
-- Opción B: Exporta la variable: export TALOSCONFIG=$(pwd)/talosconfig.
 
 ---
 
@@ -213,7 +192,7 @@ kubectl get applications -n argocd
    | platform   | Synced      | Progressing   |
 
    > **Note:**
-   > The `platform` app often remains in a `Progressing` state (instead of `Healthy`) because the Istio Gateway is waiting for a LoadBalancer IP that doesn’t exist in a local lab environment. This is normal and can be ignored.
+   > The `platform` app often remains in a `Progressing` state (instead of `Healthy`) because the Istio Gateway is waiting for a LoadBalancer IP that doesn't exist in a local lab environment. This is normal and can be ignored.
 
 ---
 
