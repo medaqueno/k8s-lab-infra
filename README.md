@@ -157,10 +157,13 @@ Hacer que talosctl use ese archivo automáticamente: Para no tener que poner --t
 ---
 
 
-## 6. GitOps Bootstrap
-Instead of manually creating namespaces and installing components, we will let ArgoCD manage the platform.
+## 6. Handover to GitOps (Platform Bootstrap)
+
+Once the OS and Kubernetes base are ready, we hand over control to **ArgoCD**. This follows the GitOps pattern where the desired state of the platform is defined in git.
 
 ### 6.1 Install ArgoCD
+We install the GitOps engine first:
+
 ```bash
 # Create namespace
 kubectl create namespace argocd
@@ -172,122 +175,32 @@ kubectl label namespace argocd tier=platform
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 ```
 
-### 6.2 Install Gateway API CRDs (Required for Istio Ambient)
-These CRDs must be present before ArgoCD tries to sync the Istio Gateway:
+### 6.2 Install Gateway API CRDs
+Istio Ambient Mesh (our network layer) requires these CRDs to be present before it boots.
+You can check new versions in: https://github.com/kubernetes-sigs/gateway-api/releases
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
 ```
 
-### 6.3 Apply Bootstrap App
-Apply the "App of Apps" which will spin up the Platform (Istio, Namespaces) and Workloads.
+### 6.3 Ignite the Platform
+We apply a single "Bootstrap" application that tells ArgoCD to read the configuration from our GitOps repository.
+
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/medaqueno/k8s-lab-gitops/main/bootstrap/bootstrap.yaml
 ```
-*Note: Ensure you have pushed your changes to `k8s-lab-gitops` before running this.*
-
-### 6.4 Verify Platform
-ArgoCD will automatically create the base infrastructure:
-1.  **Create Namespaces**: `istio-system` (Platform Mesh).
-2.  **Install Mesh components**: Istio Gateway, Ztunnel and CNI.
-
-It will take a few minutes until all pods are running.
-
-## Check the Progress
-
-### ArgoCD Applications
-Run the following command to check the status of your applications in ArgoCD:
-
-```bash
-kubectl get applications -n argocd
-```
-
-   You should see at least **two applications**:
-   - The **bootstrap** app (the parent).
-   - The **platform** app (created by the bootstrap app).
-
-   Example output:
-
-   | NAME       | SYNC STATUS | HEALTH STATUS |
-   |------------|-------------|---------------|
-   | bootstrap  | Synced      | Healthy       |
-   | platform   | Synced      | Progressing   |
-
-   > **Note:**
-   > The `platform` app often remains in a `Progressing` state (instead of `Healthy`) because the Istio Gateway is waiting for a LoadBalancer IP that doesn’t exist in a local lab environment. This is normal and can be ignored.
 
 ---
 
-### Istio Ambient Pods
-Run the following command to check the pods in the `istio-system` namespace:
+## 7. What's Next?
+Your cluster is now bootstrapping itself. It will automatically download and install:
+- Istio Ambient Mesh (Ztunnel, Istiod, CNI)
+- Ingress Gateways
+- Application Workloads
 
-```bash
-kubectl get pods -n istio-system
-```
+### 🛑 Stop Here!
+This repository (`k8s-lab-infra`) has done its job: you have a running cluster. 
 
-   You should see the **4 core components of Istio Ambient**. Since you are on a single node, you will see **1 of each**:
+For **Access Credentials**, **Dashboards**, **Deploying Applications** and **Verifying the Platform**, please proceed to the **GitOps Repository**:
 
-   | NAME                          | READY | STATUS  | RESTARTS | AGE |
-   |-------------------------------|-------|---------|----------|-----|
-   | istiod-xxxxx                  | 1/1   | Running | 0        | 2m  |
-   | main-gateway-istio-xxxxx      | 1/1   | Running | 0        | 2m  |
-   | ztunnel-xxxxx                 | 1/1   | Running | 0        | 2m  |
+👉 **[k8s-lab-gitops/README.md](https://github.com/medaqueno/k8s-lab-gitops)**
 
-   - **istiod**: The control plane of Istio.
-   - **ztunnel**: The secure proxy (handling mTLS) for Ambient mesh.
-   - **main-gateway-istio**: Your ingress gateway (the name may vary slightly depending on your specific Helm release name, but it usually contains "gateway").
-
----
-
-## 7. Operational Verification
-
-### 7.1 Namespace & Multi-Tenancy
-Ensure namespaces were created with the correct labels for the architecture:
-```bash
-# Check for Tier labels
-kubectl get namespaces -L tier
-```
-
-### 7.2 Istio Ambient Mesh Status
-Verify that the sidecarless mesh is active:
-```bash
-# Verify Ztunnel (one pod per node)
-kubectl get pods -n istio-system -l app=ztunnel
-
-# Verify Istio Ingress Gateway
-kubectl get pods -n istio-system -l app=istio-ingressgateway
-
-# Check if pods in dev-demo-app are captured by the mesh
-# (The output should show ztunnel log entries for the pod IP)
-kubectl logs -n istio-system -l app=ztunnel | grep "adding pod"
-```
-
----
-
-## 8. Known Issues & Tips for Local Labs
-
-### LoadBalancer IP Pending
-Your Gateway Service will show `<pending>` because there is no Cloud Load Balancer. 
-* **Impact**: ArgoCD will show the app as `Progressing` indefinitely.
-* **Workaround**: You can still access the services via NodePort if you find the mapped ports:
-  ```bash
-  kubectl get svc -n istio-system main-gateway-istio
-  ```
-* **Recommended fix**: Install **MetalLB** later to manage a local pool of IPs.
-
-### Pod Security for Istio Ambient
-Ztunnel requires `privileged` host permissions. If you see `FailedCreate` errors in `istio-system`, verify that the namespace is labeled:
-`pod-security.kubernetes.io/enforce=privileged`.
-
-## 9. Next Steps: GitOps Operations
-
-From this point forward, all application and configuration management is done through Git and ArgoCD.
-
-**For GitOps operations (deployments, configurations, rollbacks)**, refer to the complete documentation at:
-📘 **[k8s-lab-gitops Repository](https://github.com/medaqueno/k8s-lab-gitops)**
-
-There you will find:
-- How to add new applications
-- ConfigMaps and Secrets management
-- Multi-environment deployments (dev/prod)
-- Rollbacks and troubleshooting
-- ArgoCD UI access
